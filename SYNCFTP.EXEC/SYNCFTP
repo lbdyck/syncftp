@@ -1,0 +1,191 @@
+  /* --------------------  rexx procedure  -------------------- *
+  | Name:      SyncFTP                                         |
+  |                                                            |
+  | Function:  Sync selected datasets between FTP sites        |
+  |                                                            |
+  | Syntax:    %syncftp fromds tods target_ip age -p port      |
+  |                                                            |
+  |            fromds is the source dataset (ps or pds)        |
+  |            tods is the target dataset name (same dcb)      |
+  |                 may be = if same name as fromds            |
+  |            target_ip is the IP (or name) of target LPAR    |
+  |            age - # of days to use to identify changed      |
+  |                members to sync (default is 3)              |
+  |            -p port defines the port to use (default 21)    |
+  |                                                            |
+  |        or %syncftp ?                                       |
+  |           to display help/usage information                |
+  |                                                            |
+  | Usage Notes:                                               |
+  |            1. Requires a uerid.NETRC for the FTP to        |
+  |               avoid userid/pw prompting                    |
+  |               - userid.NETRC should be RACF restricted     |
+  |                 to only the userid                         |
+  |            2. Uses the PDS command to identify changed     |
+  |               PDS members for the prior 'n' days           |
+  |            3. FTP runs in the foreground                   |
+  |            4. Basic validation of all options except the   |
+  |               target_ip will be performed                  |
+  |            5. If the from/to datasets are not in quotes    |
+  |               then they will default to the active userid  |
+  |               on each side of the ftp.                     |
+  |                                                            |
+  | Dependencies:                                              |
+  |            1. PDS command                                  |
+  |            2. userid.NETRC                                 |
+  |                                                            |
+  | Author:    Lionel B. Dyck                                  |
+  |                                                            |
+  | History:  (most recent on top)                             |
+  |            01/26/21 LBD - Add option ? for help/usage info |
+  |            01/22/21 LBD - Correct port default             |
+  |            01/19/21 LBD - Correct call for port            |
+  |            01/16/21 LBD - Creation                         |
+  |                                                            |
+  * ---------------------------------------------------------- */
+  arg options
+
+  if options = '?' then do
+    call do_help
+    exit 0
+  end
+
+  if pos('-P',options) > 0
+  then parse value options with fromds tods toip age '-P' port
+  else parse value options with fromds tods toip age
+
+  parse value '' with null
+
+  if sysdsn(fromds) /= 'OK' then call bad 'fromds'
+  if tods = '=' then tods = fromds
+  netrc = "'"sysvar("sysuid")".NETRC'"
+  if sysdsn(netrc)  /= 'OK' then call bad 'netrc'
+  if age /= null then
+  if datatype(age) /= 'NUM' then call bad_age
+  if age = null then age = 3
+  if port = 'PORT' then port = null
+  if port /= null then
+  if datatype(port) /= 'NUM' then call bad_port
+  if port = null then port = 21
+
+  /* ----------- *
+  | Check dsorg |
+  * ----------- */
+  x = listdsi(fromds)
+
+  ftpc = 2
+  ftp.1 = 'mode b'
+  ftp.2 = 'type e'
+  /* ----------------- *
+  | Process a PS file |
+  * ----------------- */
+  if sysdsorg = 'PS' then do
+    ftp.3 = 'put' fromds tods
+    ftpc  = 3
+  end
+  /* ------------- *
+  | Process a PDS |
+  * ------------- */
+  else do
+    ftp.3 = 'cd' tods
+    ftp.4 = 'lcd' fromds
+    ftpc = 4
+
+    call outtrap 'p.'
+    'pds' fromds 'if : last('age')'
+    call outtrap 'off'
+    if word(p.1,2) = 'MEMBER'
+    then off = 2
+    else off = 1
+
+    do i = 2 to p.0
+      ftpc = ftpc + 1
+      ftp.ftpc = 'put' word(p.i,off)
+    end
+  end
+  ftpc = ftpc + 1
+  ftp.ftpc = 'Quit'
+  ftp.0 = ftpc
+
+  'alloc f(input) spa(15,15) tr recfm(f b) lrecl(80) blksize(32720) reuse'
+  if sysvar('sysispf') = 'ACTIVE'
+  then 'alloc f(output) spa(15,15) tr reuse'
+  else 'alloc f(output) da(*) reuse'
+  'Execio * diskw input (finis stem ftp.'
+
+  call outtrap 'x.'
+  ftphost = toip port
+  address linkmvs 'ftp ftphost'
+  call outtrap 'off'
+
+  if sysvar('sysispf') = 'ACTIVE' then do
+    'execio * diskr output (finis stem out.'
+    call stemedit 'view',out.
+  end
+
+  'free f(input output)'
+  Exit
+
+  /* -------------- *
+  | Error Routines |
+  * -------------- */
+Bad:
+  arg bad_file
+  say 'Error on' bad_file':' value(bad_file)
+  say sysdsn(value(bad_file))
+  exit 8
+
+Bad_age:
+  say 'Error on AGE - Not a valid number >'age'<'
+  exit 8
+
+Bad_port:
+  say 'Error on PORT - Not a valid number >'port'<'
+  exit 8
+
+  /* ------------------------------------------------ *
+  | Display for the user help and usage information. |
+  * ------------------------------------------------ */
+Do_Help:
+  say 'SyncFTP - send selected PDS members based on age from'
+  say '          the local system to a remote system via FTP.'
+  say ' '
+  say 'The age is the number of days since the member was changed'
+  say 'and is determined by using the PDS (CBT File 182) command.'
+  say ' '
+  say 'Syntax:  '
+  say '         %syncftp fromds tods target_ip age -p port'
+  say '                                                        '
+  say '         fromds is the source dataset (ps or pds)       '
+  say '         tods is the target dataset name (same dcb)     '
+  say '              may be = if same name as fromds           '
+  say '         target_ip is the IP (or name) of target LPAR   '
+  say '         age - # of days to use to identify changed     '
+  say '             members to sync (default is 3)             '
+  say '         -p port defines the port to use (default 21)   '
+  say '                                                        '
+  say 'Notes: '
+  say ' '
+  say '     1. An AGE of 0 will select members updated today.'
+  say ' '
+  say '     2. To prevent prompting for userid and password a '
+  say '        NETRC dataset is required. It must be named: '
+  say '        userid.NETRC (e.g.' sysvar("sysuid")'.NETRC) '
+  say ' '
+  say '     3. The NETRC format is RECFM(V B) LRECL(255) BLKSIZE(0)'
+  say ' '
+  say '        The records layout is:'
+  say ' '
+  say '        MACHINE ip-address LOGIN userid PASSWORD password'
+  say '    or  MACHINE host-name  LOGIN userid PASSWORD password'
+  say ' '
+  say '     4. The NETRC dataset should be protected using the '
+  say '        Security manager installed (RACF,ACF2,TSS) to prevent'
+  say '        others from reading it. The installation can generate'
+  say '        a rule to do this for all users. Contact your security'
+  say '        administrator about this.'
+  say ' '
+  say '     5. This exec requires the PDS command found on the'
+  say '        CBTTape (www.cbttape.org) in file 182.'
+  say ' '
+  return
