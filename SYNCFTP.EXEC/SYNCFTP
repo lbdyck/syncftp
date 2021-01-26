@@ -38,6 +38,7 @@
   |                                                            |
   | History:  (most recent on top)                             |
   |            01/26/21 LBD - Add option ? for help/usage info |
+  |                         - Correct for batch usage (offset) |
   |            01/22/21 LBD - Correct port default             |
   |            01/19/21 LBD - Correct call for port            |
   |            01/16/21 LBD - Creation                         |
@@ -94,7 +95,7 @@
     call outtrap 'p.'
     'pds' fromds 'if : last('age')'
     call outtrap 'off'
-    if word(p.1,2) = 'MEMBER'
+    if word(p.1,1) = 'PDS230I'
     then off = 2
     else off = 1
 
